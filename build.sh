@@ -20,7 +20,10 @@ for ARCH in arm64 x86_64; do
     -framework AppKit -framework WebKit Sources/Policy.swift Sources/main.swift -o "$OUTPUT/ticker-$ARCH"
 done
 lipo -create "$OUTPUT/ticker-arm64" "$OUTPUT/ticker-x86_64" -output "$APP/Contents/MacOS/FCTeugnMiniticker"
-lipo -verify_arch arm64 x86_64 "$APP/Contents/MacOS/FCTeugnMiniticker"
+lipo "$APP/Contents/MacOS/FCTeugnMiniticker" -verify_arch arm64 x86_64
+xcrun swiftc -swift-version 5 -D CI_SMOKE_TEST -sdk "$SDK" -framework AppKit -framework WebKit \
+  Sources/Policy.swift Sources/main.swift -o "$OUTPUT/native-smoke"
+"$OUTPUT/native-smoke"
 for SIZE in 16 32 128 256 512; do
   sips -z "$SIZE" "$SIZE" Club.png --out "$OUTPUT/Club.iconset/icon_${SIZE}x${SIZE}.png" >/dev/null
   DOUBLE=$((SIZE * 2))

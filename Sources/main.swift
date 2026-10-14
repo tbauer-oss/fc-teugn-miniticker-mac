@@ -9,7 +9,13 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
     private var pinButton: NSButton!
     private var statusText: NSTextField!
     private var timer: Timer?
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults = {
+        #if CI_SMOKE_TEST
+        return UserDefaults(suiteName: "de.fc-teugn.miniticker.smoke.\(UUID().uuidString)")!
+        #else
+        return .standard
+        #endif
+    }()
     private var ready = false
     private var failed = false
     private var refreshing = false
@@ -82,6 +88,10 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
         statusItem.button?.toolTip = "FC Teugn · Miniticker"
         statusItem.menu = tickerMenu()
         clampWindow()
+        #if CI_SMOKE_TEST
+        smokeTest()
+        return
+        #endif
         showWindow()
         reconnect()
         timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.heartbeat() }
@@ -103,6 +113,36 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
         menu.addItem(edit)
         NSApplication.shared.mainMenu = menu
     }
+    #if CI_SMOKE_TEST
+    private func smokeTest() {
+        // In-process integration test, not remote desktop automation. The test
+        // executable uses an isolated preferences domain and no network/auth data.
+        precondition(window.level == .floating)
+        precondition(pinButton.state == .on)
+        precondition(!modeControl.isEnabled)
+        precondition(window.contentView!.subviews.count == 3)
+        precondition(statusItem.menu!.items.count >= 9)
+        togglePin(); precondition(window.level == .normal && pinButton.state == .off)
+        togglePin(); precondition(window.level == .floating && pinButton.state == .on)
+        toggleClose(); precondition(!defaults.bool(forKey: "closeToMenu"))
+        toggleClose(); precondition(defaults.bool(forKey: "closeToMenu"))
+        modeControl.selectedSegment = 1; modeChanged(); precondition(selectedView == "ticker")
+        modeControl.selectedSegment = 0; modeChanged(); precondition(selectedView == "score")
+        connectionFailed(); precondition(!statusText.isHidden && web.isHidden && failed)
+        web.isHidden = false; statusText.isHidden = true
+        window.makeKeyAndOrderFront(nil)
+        web.loadHTMLString("<!doctype html><meta charset=utf-8><p id=fixture>Mac-WebKit-Test</p>", baseURL: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { fatalError("Mac WebKit smoke test timed out") }
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.evaluateJavaScript("document.getElementById('fixture').textContent") { value, error in
+            precondition(error == nil && value as? String == "Mac-WebKit-Test")
+            print("Native Mac window, menu, topmost, controls, error state and WebKit startup passed.")
+            fflush(stdout)
+            NSApplication.shared.terminate(nil)
+        }
+    }
+    #endif
     private func tickerMenu() -> NSMenu {
         let menu = NSMenu(title: "FC Teugn Miniticker")
         func item(_ title: String, _ action: Selector, _ key: String = "") {
@@ -202,6 +242,9 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
         }
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        #if CI_SMOKE_TEST
+        if action.request.url?.absoluteString == "about:blank" { decisionHandler(.allow); return }
+        #endif
         guard let url = action.request.url, !action.shouldPerformDownload else { decisionHandler(.cancel); return }
         if action.targetFrame?.isMainFrame == false { decisionHandler(url.scheme == "https" || url.absoluteString == "about:blank" ? .allow : .cancel); return }
         if action.targetFrame == nil || !TickerPolicy.sameSite(url) {
