@@ -21,6 +21,9 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
     private var refreshing = false
     private var quitting = false
     private var nextRefresh = Date().addingTimeInterval(300)
+    #if CI_SMOKE_TEST
+    private var smokePhase = "fixture"
+    #endif
     private var selectedView: String { TickerPolicy.view(defaults.string(forKey: "view")) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -116,7 +119,7 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
     #if CI_SMOKE_TEST
     private func smokeTest() {
         // In-process integration test, not remote desktop automation. The test
-        // executable uses an isolated preferences domain and no network/auth data.
+        // executable uses isolated preferences and never receives authentication data.
         precondition(window.level == .floating)
         precondition(pinButton.state == .on)
         precondition(!modeControl.isEnabled)
@@ -132,14 +135,16 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
         web.isHidden = false; statusText.isHidden = true
         window.makeKeyAndOrderFront(nil)
         web.loadHTMLString("<!doctype html><meta charset=utf-8><p id=fixture>Mac-WebKit-Test</p>", baseURL: nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { fatalError("Mac WebKit smoke test timed out") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45) { fatalError("Mac WebKit/login smoke test timed out") }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard smokePhase == "fixture" else { return }
         webView.evaluateJavaScript("document.getElementById('fixture').textContent") { value, error in
             precondition(error == nil && value as? String == "Mac-WebKit-Test")
             print("Native Mac window, menu, topmost, controls, error state and WebKit startup passed.")
             fflush(stdout)
-            NSApplication.shared.terminate(nil)
+            self.smokePhase = "login"
+            self.reconnect()
         }
     }
     #endif
@@ -236,7 +241,18 @@ final class TickerApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavi
               let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "ready": ready = true; failed = false; web.isHidden = false; statusText.isHidden = true; modeControl.isEnabled = true; setView(selectedView)
-        case "login": ready = false; failed = false; statusText.isHidden = true; web.isHidden = false; modeControl.isEnabled = false; window.setContentSize(NSSize(width: 440, height: 620)); clampWindow()
+        case "login":
+            ready = false; failed = false; statusText.isHidden = true; web.isHidden = false; modeControl.isEnabled = false
+            window.setContentSize(NSSize(width: 440, height: 620)); clampWindow()
+            #if CI_SMOKE_TEST
+            if smokePhase == "login" {
+                precondition(!ready && !web.isHidden && !modeControl.isEnabled)
+                precondition(window.contentView!.bounds.width == 440)
+                print("Protected demo login and trusted WebKit message bridge passed. No credentials submitted.")
+                fflush(stdout)
+                NSApplication.shared.terminate(nil)
+            }
+            #endif
         case "error": connectionFailed()
         default: break
         }
